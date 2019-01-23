@@ -141,6 +141,61 @@ class AudioEncoderDecoder(tf.keras.models.Model):
     return net
 
 
+class AudioClassifier(tf.keras.models.Model):
+
+  def __init__(self, name='AudioClassifier', out_size=1):
+    super(AudioClassifier, self).__init__(name=name)
+
+    with tf.name_scope("encoder"):
+      self.conv1 = tf.keras.layers.Conv1D(
+          filters=3,
+          kernel_size=10,
+          padding='same',
+          activation=tf.nn.leaky_relu)
+      self.pool1 = tf.keras.layers.AveragePooling1D(
+          pool_size=10, padding='same')
+      self.norm1 = tf.keras.layers.BatchNormalization()
+
+      self.conv2 = tf.keras.layers.Conv1D(
+          filters=5, kernel_size=8, padding='same', activation=tf.nn.leaky_relu)
+      self.pool2 = tf.keras.layers.AveragePooling1D(
+          pool_size=10, padding='same')
+      self.norm2 = tf.keras.layers.BatchNormalization()
+
+      self.conv3 = tf.keras.layers.Conv1D(
+          filters=10,
+          kernel_size=5,
+          padding='same',
+          activation=tf.nn.leaky_relu)
+      self.pool3 = tf.keras.layers.AveragePooling1D(
+          pool_size=10, padding='same')
+      self.norm3 = tf.keras.layers.BatchNormalization()
+
+    with tf.name_scope('fully_connected'):
+      self.dense = tf.keras.layers.Dense(units=20, activation=tf.nn.leaky_relu)
+      self.out = tf.keras.layers.Dense(units=out_size)
+
+  def __call__(self, inputs):
+    net = inputs
+    net = self.conv1(inputs)
+    net = self.pool1(inputs)
+    net = self.norm1(inputs)
+
+    net = self.conv2(inputs)
+    net = self.pool2(inputs)
+    net = self.norm2(inputs)
+
+    net = self.conv3(inputs)
+    net = self.pool3(inputs)
+    net = self.norm3(inputs)
+
+    net = tf.reduce_max(net, axis=-2)
+    net = self.dense(net)
+    net = self.out(net)
+
+    return net
+
+
 if __name__ == '__main__':
   tf.enable_eager_execution()
 
