@@ -12,7 +12,7 @@ from absl import logging
 class Trainer():
 
   def __init__(self):
-    raise NotImplementedError
+    pass
 
   # TODO(adam): Include Pop based training (And other training algorithms?)
   # TODO(adam): Distributed? Need chief, workers, and ps
