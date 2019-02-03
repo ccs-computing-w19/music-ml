@@ -14,6 +14,8 @@ from absl import logging
 import models
 import trainer
 
+from scipy.io.wavfile import write as write_wav
+
 tf.enable_eager_execution()
 
 FLAGS = flags.FLAGS
@@ -43,7 +45,8 @@ def main(argv):
     audio = parsed_features['song']
     sample_rate = parsed_features['sample_rate']
 
-    audio = tf.decode_raw(audio, tf.uint8)
+    audio = tf.decode_raw(audio, tf.int16)
+    audio = (tf.to_float(audio) + 0.5) / 32767.5
     audio = tf.reshape(audio, [-1, 1])
     audio = tf.cast(audio, tf.float32)
 
@@ -70,9 +73,12 @@ def main(argv):
   original_disc = models.AudioClassifier()
 
   for step, element in enumerate(tf.data.Dataset.zip((original_ds, midi_ds))):
-    print(step)
-    print(element[0])
-    print(element[1])
+    original = element[0]
+    midi = element[1]
+
+    print(original[1].numpy())
+    write_wav("/tmp/test.wav", int(original[0].numpy()), original[1].numpy()[0])
+    break
 
 
 if __name__ == '__main__':
