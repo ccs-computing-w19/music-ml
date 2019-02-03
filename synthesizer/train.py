@@ -5,12 +5,16 @@ from __future__ import print_function
 import os
 
 import tensorflow as tf
+from tensorflow.contrib import eager as tfe
+
 from absl import app
 from absl import flags
 from absl import logging
 
 import models
 import trainer
+
+tf.enable_eager_execution()
 
 FLAGS = flags.FLAGS
 
@@ -19,6 +23,7 @@ flags.DEFINE_string("instrument", None,
 flags.DEFINE_string("data_path", "data", "Data root path")
 
 flags.DEFINE_integer("batch_size", 1, "Batch size to use.")
+flags.DEFINE_integer("steps", None, "Number of steps.")
 
 
 def main(argv):
@@ -38,7 +43,7 @@ def main(argv):
     audio = parsed_features['song']
     sample_rate = parsed_features['sample_rate']
 
-    audio = tf.decode_raw(audio, tf.int16)
+    audio = tf.decode_raw(audio, tf.uint8)
     audio = tf.reshape(audio, [-1, 1])
     audio = tf.cast(audio, tf.float32)
 
@@ -48,17 +53,15 @@ def main(argv):
 
   original_ds = tf.data.TFRecordDataset(ORIGINAL_PATH)
   original_ds = original_ds.map(_parse_fn)
-  original_ds = original_ds.shuffle(100)
+  # original_ds = original_ds.shuffle(100)
   original_ds = original_ds.batch(FLAGS.batch_size)
-  original_iterator = original_ds.make_one_shot_iterator()
-  original_sr, original_song = original_iterator.get_next()
+  original_ds = original_ds.repeat()
 
   midi_ds = tf.data.TFRecordDataset(MIDI_PATH)
   midi_ds = midi_ds.map(_parse_fn)
-  midi_ds = midi_ds.shuffle(100)
+  # midi_ds = midi_ds.shuffle(100)
   midi_ds = midi_ds.batch(FLAGS.batch_size)
-  midi_iterator = midi_ds.make_one_shot_iterator()
-  midi_sr, midi_song = midi_iterator.get_next()
+  midi_ds = midi_ds.repeat()
 
   midi2original = models.AudioEncoderDecoder()
   original2midi = models.AudioEncoderDecoder()
@@ -66,18 +69,10 @@ def main(argv):
   midi_disc = models.AudioClassifier()
   original_disc = models.AudioClassifier()
 
-  #TODO (adam): Finish this
-
-  # def step_fn(session):
-
-  with tf.Session() as sess:
-    sess.run(tf.global_variables_initializer())
-
-    orig_song, orig_sr = sess.run([original_song, original_sr])
-    midi_song, midi_sr = sess.run([midi_song, midi_sr])
-
-    print(orig_song)
-    print(midi_song)
+  for step, element in enumerate(tf.data.Dataset.zip((original_ds, midi_ds))):
+    print(step)
+    print(element[0])
+    print(element[1])
 
 
 if __name__ == '__main__':

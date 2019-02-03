@@ -5,17 +5,12 @@ from __future__ import print_function
 import tensorflow as tf
 from absl import logging
 
-# from synthesizer import models
 
-
-# TODO(adam): Is a class even necessary or can it be a standalone function?
 class Trainer():
 
   def __init__(self):
     pass
 
-  # TODO(adam): Include Pop based training (And other training algorithms?)
-  # TODO(adam): Distributed? Need chief, workers, and ps
   def train(self, train_step_fn, iterations):
     hooks = []
     hooks.append(tf.train.StopAtStepHook(last_step=iterations))
