@@ -2,6 +2,7 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import numpy as np
 import tensorflow as tf
 
 
@@ -57,141 +58,136 @@ class Conv1DTranspose(tf.keras.layers.Conv2DTranspose):
     return tf.TensorShape(output_shape)
 
 
+def pad_up_to(t, max_in_dims, constant_values=0):
+  s = t.shape
+  paddings = [[0, m - s[i]] for (i, m) in enumerate(max_in_dims)]
+  return tf.pad(t, paddings, 'CONSTANT', constant_values=constant_values)
+
+
+# TODO(adam): Should split audio in chunks for training more easily.
+# TODO(adam): Maybe use spectrogram as input instead.
+# TODO(adam): Pad input to get correct decoder step shape.
 class AudioEncoderDecoder(tf.keras.models.Model):
 
-  def __init__(self, name='AudioEncoderDecoder', tracks=1):
+  def __init__(self, name='AudioEncoderDecoder'):
     super(AudioEncoderDecoder, self).__init__(name=name)
 
+    kernels = [10, 10, 5, 5, 2, 2]
+    pool = [5, 5, 3, 3, 2, 2]
+    filters = [5, 5, 10, 10, 20, 20]
+
+    self.econvs = []
+    self.epools = []
+    self.enorms = []
+
+    self.dconvs = []
+    self.dnorms = []
+
     with tf.name_scope("encoder"):
-      self.econv1 = tf.keras.layers.Conv1D(
-          filters=3,
-          kernel_size=10,
-          padding='same',
-          activation=tf.nn.leaky_relu)
-      self.epool1 = tf.keras.layers.AveragePooling1D(
-          pool_size=10, padding='same')
-      self.enorm1 = tf.keras.layers.BatchNormalization()
-
-      self.econv2 = tf.keras.layers.Conv1D(
-          filters=5, kernel_size=8, padding='same', activation=tf.nn.leaky_relu)
-      self.epool2 = tf.keras.layers.AveragePooling1D(
-          pool_size=10, padding='same')
-      self.enorm2 = tf.keras.layers.BatchNormalization()
-
-      self.econv3 = tf.keras.layers.Conv1D(
-          filters=10,
-          kernel_size=5,
-          padding='same',
-          activation=tf.nn.leaky_relu)
-      self.epool3 = tf.keras.layers.AveragePooling1D(
-          pool_size=10, padding='same')
-      self.enorm3 = tf.keras.layers.BatchNormalization()
+      for i in range(len(kernels)):
+        self.econvs.append(
+            tf.keras.layers.Conv2D(
+                filters=filters[i],
+                kernel_size=kernels[i],
+                padding='same',
+                activation=tf.nn.leaky_relu))
+        self.epools.append(
+            tf.keras.layers.AveragePooling2D(pool_size=pool[i], padding='same'))
+        self.enorms.append(tf.keras.layers.BatchNormalization())
 
     with tf.name_scope("decoder"):
-      self.dconv1_transpose = Conv1DTranspose(
-          filters=10,
-          kernel_size=5,
-          strides=10,
-          padding='same',
-          activation=tf.nn.leaky_relu)
-      self.dnorm1 = tf.keras.layers.BatchNormalization()
-
-      self.dconv2_transpose = Conv1DTranspose(
-          filters=5,
-          kernel_size=8,
-          strides=10,
-          padding='same',
-          activation=tf.nn.leaky_relu)
-      self.dnorm2 = tf.keras.layers.BatchNormalization()
-
-      self.dconv3_transpose = Conv1DTranspose(
-          filters=3,
-          kernel_size=10,
-          strides=10,
-          padding='same',
-          activation=tf.nn.leaky_relu)
-      self.dnorm3 = tf.keras.layers.BatchNormalization()
+      for i in range(len(kernels)):
+        i = len(kernels) - i - 1
+        self.dconvs.append(
+            tf.keras.layers.Conv2DTranspose(
+                filters=filters[i],
+                kernel_size=kernels[i],
+                strides=pool[i],
+                padding='same',
+                activation=tf.nn.leaky_relu))
+        self.dnorms.append(tf.keras.layers.BatchNormalization())
 
     with tf.name_scope('output'):
 
-      self.out_conv = tf.keras.layers.Conv1D(
-          filters=tracks, kernel_size=10, padding='same', activation=None)
+      self.out = tf.keras.layers.Conv2D(
+          filters=2, kernel_size=10, padding='same', activation=None)
 
   def call(self, inputs):
-    net = l0 = inputs
-    net = self.econv1(net)
-    net = self.epool1(net)
-    net = l1 = self.enorm1(net)
-    net = self.econv2(net)
-    net = self.epool2(net)
-    net = l2 = self.enorm2(net)
-    net = self.econv3(net)
-    net = self.epool3(net)
-    net = l3 = self.enorm3(net)
+    encoded = []
+    net = inputs
+    net = tf.squeeze(net, axis=-1)
+    print(net.shape)
 
-    net = self.dconv1_transpose(tf.concat([net, l3], axis=-1))
-    net = self.dnorm1(net)
-    net = self.dconv2_transpose(tf.concat([net, l2], axis=-1))
-    net = self.dnorm2(net)
-    net = self.dconv3_transpose(tf.concat([net, l1], axis=-1))
-    net = self.dnorm3(net)
+    net = tf.contrib.signal.stft(net, frame_length=1024, frame_step=1024)
+    net = tf.stack([tf.real(net), tf.imag(net)], axis=-1)
 
-    net = self.out_conv(tf.concat([net, l0], axis=-1))
+    for i in range(len(self.econvs)):
+      net = self.econvs[i](net)
+      encoded.append(net)
+      net = self.epools[i](net)
+      net = self.enorms[i](net)
+
+    for i in range(len(self.dconvs)):
+      net = self.dconvs[i](net)
+      net = self.dnorms[i](net)
+      reshaped_encoded = encoded[-1]
+      reshaped_encoded = pad_up_to(reshaped_encoded, net.shape)
+      net = tf.concat([net, reshaped_encoded], axis=-1)
+      encoded.pop()
+
+    net = self.out(net)
+    net = tf.contrib.signal.inverse_stft(
+        tf.complex(net[..., 0], net[..., 1]),
+        frame_length=1024,
+        frame_step=1024)
 
     return net
 
 
+# TODO(adam): Should split audio in chunks for training more easily.
+# TODO(adam): Maybe use spectrogram as input instead.
 class AudioClassifier(tf.keras.models.Model):
 
-  def __init__(self, name='AudioClassifier', out_size=1):
+  def __init__(self, name='AudioClassifier'):
     super(AudioClassifier, self).__init__(name=name)
 
-    with tf.name_scope("encoder"):
-      self.conv1 = tf.keras.layers.Conv1D(
-          filters=3,
-          kernel_size=10,
-          padding='same',
-          activation=tf.nn.leaky_relu)
-      self.pool1 = tf.keras.layers.AveragePooling1D(
-          pool_size=10, padding='same')
-      self.norm1 = tf.keras.layers.BatchNormalization()
+    self.conv1 = tf.keras.layers.Conv2D(
+        filters=3, kernel_size=10, padding='same', activation=tf.nn.leaky_relu)
+    self.pool1 = tf.keras.layers.AveragePooling2D(pool_size=10, padding='same')
+    self.norm1 = tf.keras.layers.BatchNormalization()
 
-      self.conv2 = tf.keras.layers.Conv1D(
-          filters=5, kernel_size=8, padding='same', activation=tf.nn.leaky_relu)
-      self.pool2 = tf.keras.layers.AveragePooling1D(
-          pool_size=10, padding='same')
-      self.norm2 = tf.keras.layers.BatchNormalization()
+    self.conv2 = tf.keras.layers.Conv2D(
+        filters=5, kernel_size=8, padding='same', activation=tf.nn.leaky_relu)
+    self.pool2 = tf.keras.layers.AveragePooling2D(pool_size=10, padding='same')
+    self.norm2 = tf.keras.layers.BatchNormalization()
 
-      self.conv3 = tf.keras.layers.Conv1D(
-          filters=10,
-          kernel_size=5,
-          padding='same',
-          activation=tf.nn.leaky_relu)
-      self.pool3 = tf.keras.layers.AveragePooling1D(
-          pool_size=10, padding='same')
-      self.norm3 = tf.keras.layers.BatchNormalization()
+    self.conv3 = tf.keras.layers.Conv2D(
+        filters=10, kernel_size=5, padding='same', activation=tf.nn.leaky_relu)
+    self.pool3 = tf.keras.layers.AveragePooling2D(pool_size=10, padding='same')
+    self.norm3 = tf.keras.layers.BatchNormalization()
 
-    with tf.name_scope('fully_connected'):
-      self.dense = tf.keras.layers.Dense(units=20, activation=tf.nn.leaky_relu)
-      self.out = tf.keras.layers.Dense(units=out_size)
+    with tf.name_scope("output"):
+      self.fc = tf.keras.layers.Dense(units=1)
 
-  def __call__(self, inputs):
+  def call(self, inputs):
     net = inputs
-    net = self.conv1(inputs)
-    net = self.pool1(inputs)
-    net = self.norm1(inputs)
+    net = tf.squeeze(net, axis=-1)
 
-    net = self.conv2(inputs)
-    net = self.pool2(inputs)
-    net = self.norm2(inputs)
+    net = tf.contrib.signal.stft(net, frame_length=1024, frame_step=1024)
+    net = tf.stack([tf.real(net), tf.imag(net)], axis=-1)
 
-    net = self.conv3(inputs)
-    net = self.pool3(inputs)
-    net = self.norm3(inputs)
+    net = self.conv1(net)
+    net = self.pool1(net)
+    net = self.norm1(net)
+    net = self.conv2(net)
+    net = self.pool2(net)
+    net = self.norm2(net)
+    net = self.conv3(net)
+    net = self.pool3(net)
+    net = self.norm3(net)
 
-    net = tf.reduce_max(net, axis=-2)
-    net = self.dense(net)
-    net = self.out(net)
+    net = tf.reduce_max(net, axis=[1, 2])
+    net = self.fc(net)
 
     return net
 
@@ -202,7 +198,7 @@ if __name__ == '__main__':
   import numpy as np
 
   input_data = np.random.normal(size=[20, 6000, 1])
-  model = AudioEncoderDecoder(tracks=2)
+  model = AudioEncoderDecoder()
 
   print(input_data)
   print(input_data.shape)
