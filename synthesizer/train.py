@@ -21,6 +21,9 @@ FLAGS = flags.FLAGS
 flags.DEFINE_string("instrument", None,
                     "Instrument from which to get the files.")
 flags.DEFINE_string("data_path", "data", "Data root path")
+flags.DEFINE_string("exp_name", None, "Experiment name to save checkpoints and summaries")
+
+flags.DEFINE_bool("restore", True, "If a checkpoint exists and this flag is set to true, then restore parameters from checkpoint.")
 
 flags.DEFINE_integer("batch_size", 1, "Batch size to use.")
 flags.DEFINE_integer("steps", None, "Number of steps.")
@@ -33,7 +36,7 @@ flags.DEFINE_float('glr', 0.001, "Generator Learning rate")
 def main(argv):
   del argv
 
-  logdir = "./tb/"
+  logdir = "gs://music-generation-bucket/experiments/{}/tb".format(FLAGS.exp_name)
   writer = tf.contrib.summary.create_file_writer(logdir)
   writer.set_as_default()
 
@@ -70,23 +73,37 @@ def main(argv):
   midi_ds = midi_ds.batch(FLAGS.batch_size)
   midi_ds = midi_ds.repeat()
 
-  # strategy = tf.distribute.MirroredStrategy()
-  # with strategy.scope():
-  # midi2original = models.AudioEncoderDecoder(5)
-  # original2midi = models.AudioEncoderDecoder(5)
+  strategy = tf.contrib.distribute.MirroredStrategy()
 
-  # midi_disc = models.AudioClassifier()
-  #   original_disc = models.AudioClassifier()
-  midi2original = models.AudioEncoderDecoder(5)
-  original2midi = models.AudioEncoderDecoder(5)
+  with strategy.scope():
+    midi2original = models.AudioEncoderDecoder(5)
+    original2midi = models.AudioEncoderDecoder(5)
 
-  midi_disc = models.AudioClassifier()
-  original_disc = models.AudioClassifier()
+    midi_disc = models.AudioClassifier()
+    original_disc = models.AudioClassifier()
+
+    midi2original.build((None, None, 1))
+    original2midi.build((None, None, 1))
+    midi_disc.build((None, None, 1))
+    original_disc.build((None, None, 1))
 
   g_opt = tf.train.AdamOptimizer(FLAGS.glr)
   d_opt = tf.train.AdamOptimizer(FLAGS.dlr)
 
   step = tf.train.get_or_create_global_step()
+
+  checkpoint_dir = 'gs://music-generation-bucket/experiments/{}/checkpoints'.format(FLAGS.exp_name)
+  latest_checkpoint = tf.train.latest_checkpoint(checkpoint_dir)
+  if FLAGS.restore and latest_checkpoint:
+    print (midi2original.variables)
+    print (midi2original.weights)
+    logging.info("Restoring from {}".format(latest_checkpoint))
+    saver = tfe.Saver(midi2original.variables + original2midi.variables +
+                      midi_disc.variables + original_disc.variables)
+    saver.restore(latest_checkpoint)
+
+  print (step.numpy())
+  exit()
 
   for _, element in enumerate(tf.data.Dataset.zip((original_ds, midi_ds))):
     original_sr, original = element[0]
@@ -147,16 +164,17 @@ def main(argv):
               original_disc.trainable_variables))
     del tape
 
-    if step.numpy() % 1 == 0:
-      logging.info(
+    if step.numpy() % 10 == 0:
+      logging.debug(
           "Step: {} \t Midi Loss: {:.3E} \t Original Loss: {:.3E} \t MidiDiscLoss: {:.3E} \t OriginalDiscLoss: {:.3E}"
           .format(step.numpy(), g_midi_loss, g_original_loss, d_midi_loss,
                   d_original_loss))
 
     if step.numpy() % 100 == 0:
+      checkpoint_prefix = os.path.join(checkpoint_dir, 'checkpoint.ckpt')
       saver = tfe.Saver(midi2original.variables + original2midi.variables +
                         midi_disc.variables + original_disc.variables)
-      saver.save('checkpoints/checkpoint.ckpt', global_step=step)
+      saver.save(checkpoint_prefix, global_step=step)
     with tf.contrib.summary.record_summaries_every_n_global_steps(50):
       tf.contrib.summary.scalar('d_midi_loss', d_midi_loss)
       tf.contrib.summary.scalar('midi2original_loss', g_midi_loss)
@@ -196,4 +214,5 @@ def main(argv):
 
 
 if __name__ == '__main__':
+  flags.mark_flags_as_required(['exp_name', 'instrument'])
   app.run(main)
