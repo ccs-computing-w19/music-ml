@@ -6,6 +6,12 @@ import numpy as np
 import tensorflow as tf
 
 
+def pad_up_to(t, axis, max_in_dims, constant_values=0):
+  s = t.shape
+  paddings = [[0, m - s[i]] for (i, m) in enumerate(max_in_dims)]
+  return tf.pad(t, paddings, 'CONSTANT', constant_values=constant_values)
+
+
 # TODO(adam): Should split audio in chunks for training more easily.
 class AudioEncoderDecoder(tf.keras.models.Model):
 
@@ -25,9 +31,9 @@ class AudioEncoderDecoder(tf.keras.models.Model):
         self.dconvs.append(
             tf.keras.layers.Conv1D(
                 filters=filters[i],
-                kernel_size=2,
+                kernel_size=5,
                 dilation_rate=dilation[i],
-                padding='same',
+                padding='SAME',
                 activation=tf.nn.leaky_relu))
         self.norms.append(tf.keras.layers.BatchNormalization())
 
@@ -38,7 +44,14 @@ class AudioEncoderDecoder(tf.keras.models.Model):
   def call(self, inputs):
     net = inputs
 
-    skip = []
+    # print(net.shape)
+    # pad_up_to(
+    # net,
+    # axis=1,
+    # tf.shape(net)[1] +
+    # tf.shape(net)[1] % reduce(lambda x, y: x * y, self.dilation))
+
+    skip = [inputs]
     for i in range(len(self.dconvs)):
       resid = net
       net = self.dconvs[i](net)
@@ -46,10 +59,8 @@ class AudioEncoderDecoder(tf.keras.models.Model):
       net = net + resid
       skip.append(net)
 
-    net = tf.reduce_sum(skip, axis=0)
-    net = self.out(net)
-
-    return net
+    net = tf.concat(skip, axis=-1)
+    return self.out(net)
 
 
 # TODO(adam): Should split audio in chunks for training more easily.
@@ -75,14 +86,13 @@ class AudioClassifier(tf.keras.models.Model):
       self.pools.append(
           tf.keras.layers.AveragePooling1D(
               pool_size=pool_sizes[i], padding='same'))
-      self.norm1 = tf.keras.layers.BatchNormalization()
+      self.norms.append(tf.keras.layers.BatchNormalization())
 
     with tf.name_scope("output"):
       self.fc = tf.keras.layers.Dense(units=1)
 
   def call(self, inputs):
     net = inputs
-    net = tf.squeeze(net, axis=-1)
 
     for i in range(len(self.convs)):
       net = self.convs[i](net)
